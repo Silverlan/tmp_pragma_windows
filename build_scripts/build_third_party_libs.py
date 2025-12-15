@@ -438,7 +438,12 @@ else:
 	os.chdir(sevenz_root)
 	sevenz_so_path = sevenz_root +"/CPP/7zip/Bundles/Format7zF"
 	os.chdir(sevenz_so_path)
-	subprocess.run(["make","-j","-f","../../cmpl_gcc.mak","CXXFLAGS=-Wno-error=array-bounds -Wno-array-bounds"],check=True)
+
+	env = os.environ.copy()
+	env['CXXFLAGS'] = env.get('CXXFLAGS', '') + ' -Wno-error=array-bounds -Wno-array-bounds'
+	env['CFLAGS']  = env.get('CFLAGS', '')  + ' -Wno-error=array-bounds -Wno-array-bounds'
+	subprocess.run(["make", "-j", "-f", "../../cmpl_gcc.mak"], check=True, env=env)
+
 	mkpath(install_dir +"/lib")
 	copy_prebuilt_binaries(sevenz_so_path +"/b/g/", "7z")
 
