@@ -125,12 +125,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: "c:/pragma/deps/pragma_installer/pragma_setup.exe"
 
-      - name: Run Tests
-        uses: benc-uk/workflow-dispatch@v1
-        with:
-          workflow: pragma-tests-ci.yml
-          inputs: '{ "os": "windows" }'
-
       - name: Generate File Lists
         shell: bash
         if: always()
