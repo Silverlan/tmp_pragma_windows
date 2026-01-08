@@ -20,11 +20,11 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          - os: ubuntu-24.04
-            name: "Ubuntu 24.04"
+          - os: ubuntu-latest
+            name: "Ubuntu Latest"
     steps:
       - name: Setup Pragma
-        uses: Silverlan/pragma/github_actions/setup@main
+        uses: Silverlan/pragma/github_actions/setup@develop
         with:
           branch: ${{ github.ref_name }}
           clone_url: "https://github.com/${{ github.repository }}.git"
@@ -33,8 +33,8 @@ jobs:
         uses: ./pragma/github_actions/build
         id: build-pragma
         with:
-          build-args: "--with-pfm --with-all-pfm-modules --with-vr --with-networking --with-lua-debugger=0 --with-swiftshader"
-
+          build-args: '--with-pfm --with-all-pfm-modules --with-vr --with-networking --with-lua-debugger=0 --with-swiftshader'
+            
       - name: Run Tests
         uses: ./pragma/github_actions/run_common_tests
         timeout-minutes: 60
@@ -47,6 +47,10 @@ jobs:
       #  if: failure()
       #  with:
       #    timeout-minutes: 15
+
+      - name: Analyze Disk Space
+        uses: Silverlan/common_actions/analyze_disk_space@main
+        if: failure()
 
       - name: Upload Debug Artifacts
         if: ${{ !cancelled() }}

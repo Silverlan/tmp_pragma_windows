@@ -14,19 +14,18 @@ parser = argparse.ArgumentParser(description='Pragma build script', allow_abbrev
 
 ###### Config section
 # When using prebuilt binaries this tag will be used for the download from https://github.com/Silverlan/pragma-deps-lib
-prebuilt_tag = "2025-08-20"
+prebuilt_tag = "2026-01-07"
 ######
 
 # See https://stackoverflow.com/a/43357954/1879228 for boolean args
 if platform == "linux":
-	parser.add_argument('--c-compiler', help='The C-compiler to use.', default='clang-20')
-	parser.add_argument('--cxx-compiler', help='The C++-compiler to use.', default='clang++-20')
-	defaultGenerator = "Ninja Multi-Config"
+	parser.add_argument('--c-compiler', help='The C-compiler to use.', default='clang-22')
+	parser.add_argument('--cxx-compiler', help='The C++-compiler to use.', default='clang++-22')
 else:
-	defaultGenerator = "Visual Studio 17 2022"
-	defaultToolset = "msvc"
+	defaultToolset = "clang"
 
-parser.add_argument('--generator', help='The generator to use.', default=defaultGenerator)
+# See https://stackoverflow.com/a/43357954/1879228 for boolean args
+parser.add_argument('--generator', help='The generator to use.', default="Default")
 parser.add_argument("--with-essential-client-modules", type=str2bool, nargs='?', const=True, default=True, help="Include essential modules required to run Pragma.")
 parser.add_argument("--with-common-modules", type=str2bool, nargs='?', const=True, default=True, help="Include non-essential but commonly used modules (e.g. audio and physics modules).")
 parser.add_argument("--with-pfm", type=str2bool, nargs='?', const=True, default=False, help="Include the Pragma Filmmaker.")
@@ -46,23 +45,42 @@ parser.add_argument('--build-config', help='The build configuration to use.', de
 parser.add_argument('--build-directory', help='Directory to write the build files to. Can be relative or absolute.', default='build')
 parser.add_argument('--deps-directory', help='Directory to write the dependency files to. Can be relative or absolute.', default='deps')
 parser.add_argument("--deps-only", type=str2bool, nargs='?', const=True, default=False, help="Configuration, build and installation of Pragma will be skipped.")
+parser.add_argument("--clean-deps-build-files", type=str2bool, nargs='?', const=True, default=False, help="Automatically clean up build files of third-party dependencies to save disk space.")
 parser.add_argument('--install-directory', help='Installation directory. Can be relative (to build directory) or absolute.', default='install')
 parser.add_argument('--cmake-arg', help='Additional cmake argument for configuring Pragma. This parameter can be used multiple times.', action='append', default=[])
+parser.add_argument("--cmake-cxx-flag", action="append", help="Additional flags to add to CMAKE_CXX_FLAGS.", default=[])
 parser.add_argument('--module', help='Custom modules to install. Use this parameter multiple times to use multiple modules. Usage example: --module pr_physx:\"https://github.com/Silverlan/pr_physx.git\"', action='append', default=[])
 # parser.add_argument('--log-file', help='Script output will be written to this file.', default='build_log.txt')
 parser.add_argument("--verbose", type=str2bool, nargs='?', const=True, default=False, help="Print additional verbose output.")
 parser.add_argument("--update", type=str2bool, nargs='?', const=True, default=False, help="Update Pragma and all submodules and modules to the latest versions.")
 parser.add_argument("--rerun", type=str2bool, nargs='?', const=True, default=False, help="Re-run the build script with the previous arguments.")
+parser.add_argument("--prefer-git-https", type=str2bool, nargs='?', const=True, default=True, help="Clone repositories via HTTPS instead of SSH.")
 parser.add_argument("--skip-repository-updates", type=str2bool, nargs='?', const=True, default=False, help=argparse.SUPPRESS)
 if platform == "linux":
 	parser.add_argument("--no-sudo", type=str2bool, nargs='?', const=True, default=False, help="Will not run sudo commands. System packages will have to be installed manually.")
 	parser.add_argument("--no-confirm", type=str2bool, nargs='?', const=True, default=False, help="Disable any interaction with user (suitable for automated run).")
-	parser.add_argument("--enable-assertions", type=str2bool, nargs='?', const=True, default=False, help="Enable debug assertions.")
+	parser.add_argument("--debug", type=str2bool, nargs='?', const=True, default=False, help="Enable debug assertions and disable code optimizations.")
 else:
-	parser.add_argument('--toolset', help='The toolset to use. Supported toolsets: msvc, clang, clang-cl', default=defaultToolset)
+	parser.add_argument('--toolset', help='The toolset to use. Supported toolsets: msvc, clang', default=defaultToolset) # clang-cl currently not supported
 args,unknown = parser.parse_known_args()
 args = vars(args)
 input_args = args
+
+if platform == "linux":
+	if args["generator"] == "Default":
+		args["generator"] = config.default_generator
+else:
+	# Note: CMake (v4.2.0) does not support the Visual Studio generator yet when using
+	# C++23 import std. Until CMake adds support, we fall back to the Ninja generator,
+	# except for third-party dependencies, which are usually designed for
+	# being built with Visual Studio.
+	# Once CMake supports Visual Studio with import std, the default generator should be
+	# changed back to "Visual Studio 17 2022" for all cases.
+	if args["generator"] == "Default":
+		if args["deps_only"]:
+			args["generator"] = config.default_generator
+		else:
+			args["generator"] = "Ninja Multi-Config"
 
 #log_file = args.log_file
 #if log_file != "":
@@ -98,7 +116,7 @@ if platform == "linux":
 	cxx_compiler = args["cxx_compiler"]
 	no_sudo = args["no_sudo"]
 	no_confirm = args["no_confirm"]
-	enable_assertions = args["enable_assertions"]
+	with_debug = args["debug"]
 else:
 	toolset = args["toolset"]
 generator = args["generator"]
@@ -121,14 +139,17 @@ build_config = args["build_config"]
 build_directory = args["build_directory"]
 deps_directory = args["deps_directory"]
 deps_only = args["deps_only"]
+clean_deps_build_files = args["clean_deps_build_files"]
 install_directory = args["install_directory"]
 additional_cmake_args = args["cmake_arg"]
+additional_cmake_flags = args["cmake_cxx_flag"]
 skip_repository_updates = args["skip_repository_updates"]
 scripts_dir = os.getcwd() +"/build_scripts"
 #log_file = args["log_file"]
 verbose = args["verbose"]
 modules = args["module"]
 rerun = args["rerun"]
+prefer_git_https = args["prefer_git_https"]
 update = args["update"]
 modules_prebuilt = []
 
@@ -144,7 +165,6 @@ if not os.path.isabs(build_dir):
 if not os.path.isabs(deps_dir):
 	deps_dir = os.getcwd() +"/" +deps_dir
 deps_dir_fs = deps_dir.replace("\\", "/")
-config.deps_dir = deps_dir
 
 if not os.path.isabs(install_dir):
 	install_dir = build_dir +"/" +install_dir
@@ -171,6 +191,17 @@ else:
 	if toolset == "clang":
 		generator = "Ninja Multi-Config"
 
+config.build_swiftshader = build_swiftshader
+config.clean_deps_build_files = clean_deps_build_files
+config.deps_dir = deps_dir
+config.prefer_git_https = prefer_git_https
+config.with_lua_debugger = with_lua_debugger
+config.with_swiftshader = with_swiftshader
+if platform == "linux":
+	config.no_sudo = no_sudo
+	config.no_confirm = no_confirm
+config.generator = generator
+
 print("generator: " +generator)
 print("with_essential_client_modules: " +str(with_essential_client_modules))
 print("with_common_modules: " +str(with_common_modules))
@@ -189,39 +220,105 @@ print("build_config: " +build_config)
 print("build_directory: " +build_directory)
 print("deps_directory: " +deps_directory)
 print("deps_only: " +str(deps_only))
+print("clean_deps_build_files: " +str(clean_deps_build_files))
 print("install_directory: " +install_directory)
 if platform == "linux":
 	print("no_sudo: " +str(no_sudo))
 	print("no_confirm: " +str(no_confirm))
-	print("enable_assertions: " +str(enable_assertions))
+	print("debug: " +str(with_debug))
 print("cmake_args: " +', '.join(additional_cmake_args))
+print("cmake_flags: " +', '.join(additional_cmake_flags))
 print("modules: " +', '.join(modules))
 
-toolsetArgs = None
-toolsetCFlags = None
-def cmake_configure_def_toolset(scriptPath,generator,additionalArgs=[]):
-	cmake_configure(scriptPath,generator,toolsetArgs,additionalArgs,toolsetCFlags)
+mkpath(build_dir)
+mkpath(deps_dir)
+mkpath(install_dir)
+mkpath(tools)
+
+# Use prebuilt binaries if --build-all is not set
+if build_all == False:
+    def is_commit_current(base_path: str, commit_id: str, filename: str = "commit_id.json") -> bool:
+        return check_content_version(base_path, commit_id, filename)
+
+    def update_commit_directory(base_path: str, commit_id: str, filename: str = "commit_id.json") -> None:
+        update_content_version(base_path, commit_id, filename)
+
+    base_path = get_staging_dir()
+    if not is_commit_current(base_path, prebuilt_tag, "tag_id.json"):
+        update_commit_directory(base_path, prebuilt_tag, "tag_id.json")
+        os.chdir(base_path)
+
+        print_msg("Downloading prebuilt third-party binaries...")
+
+        if platform == "linux":
+            prebuilt_archive_name = "lib-linux_x64.tar.gz"
+            prebuilt_archive_format = "tar.gz"
+        else:
+            if toolset == "clang":
+                prebuilt_archive_name = "lib-windows_x64-clang.zip"
+            else:
+                prebuilt_archive_name = "lib-windows_x64.zip"
+            prebuilt_archive_format = "zip"
+
+        http_extract("https://github.com/Silverlan/pragma-deps-lib/releases/download/" +prebuilt_tag +"/" +prebuilt_archive_name,format=prebuilt_archive_format)
+    else:
+        print(f"Directory '{base_path}' is already up-to-date.")
 
 if platform == "win32":
 	if toolset == "msvc":
 		toolset = None # Let the compiler use the default toolset
+		print_warning(f"Visual Studio is not recommended and may not work. If you run into issues, try using the clang toolset instead.")
 	elif toolset == "clang":
-		toolsetArgs = [
-			"-DCMAKE_C_COMPILER=clang.exe",
-			"-DCMAKE_CXX_COMPILER=clang++.exe",
+		# We need an up-to-date version of clang, so we'll use our shipped version for now.
+		from third_party import clang
+		clang.main()
+
+		clang_dir = str(Path(get_library_root_dir("clang")) / "bin/")
+		config.toolsetArgs = [
+			"-DCMAKE_C_COMPILER=" +str(Path(clang_dir) / "clang.exe"),
+			"-DCMAKE_CXX_COMPILER=" +str(Path(clang_dir) / "clang++.exe"),
 			"-DCMAKE_MAKE_PROGRAM=ninja.exe"
 		]
-		toolsetCFlags = ["-fexceptions", "-fcxx-exceptions", "--target=x86_64-pc-windows-msvc"]
-	elif toolset == "clang-cl":
-		toolsetArgs = [
-			"-T", "ClangCL",
-			"-A", "x64",
-			"-DCMAKE_CXX_SCAN_FOR_MODULES=ON"
-		]
-		toolsetCFlags = ["-Wno-error", "-Wno-unused-command-line-argument", "-Wno-enum-constexpr-conversion", "-fexceptions", "-fcxx-exceptions", "/EHsc"]
+		config.toolsetCFlags = ["-fexceptions", "-fcxx-exceptions", "--target=x86_64-pc-windows-msvc"]
 
-if platform == "linux" and enable_assertions:
-	toolsetCFlags = ["-D_GLIBCXX_ASSERTIONS"]
+		# Due to "import std;" support still being experimental in CMake, we have to use a custom, patched
+		# version of CMake to build Pragma with clang on Windows.
+		from third_party import cmake
+		cmake.main()
+		config.cmake_path = str(Path(get_library_root_dir("cmake")) / "bin/cmake.exe")
+	elif toolset == "clang-cl":
+		clang_dir = get_library_root_dir("clang") +"/bin"
+		
+		config.toolsetArgs = [
+			"-DCMAKE_C_COMPILER=" +clang_dir +"/clang-cl.exe",
+			"-DCMAKE_CXX_COMPILER=" +clang_dir +"/clang-cl.exe",
+			"-DCMAKE_CXX_COMPILER_AR=" +clang_dir +"/llvm-ar.exe",
+			"-DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=" +clang_dir +"/clang-scan-deps.exe",
+			"-DCMAKE_CXX_COMPILER_RANLIB=" +clang_dir +"/llvm-ranlib.exe"
+		]
+		config.toolsetCFlags = ["-Wno-error", "-Wno-unused-command-line-argument", "-Wno-enum-constexpr-conversion", "-fexceptions", "-fcxx-exceptions"]
+		print_warning(f"Toolset {toolset} for platform {platform} is currently not supported!")
+		sys.exit(1)
+	if generator != "Ninja Multi-Config":
+		if not deps_only:
+			print_warning(f"Generator {generator} for platform {platform} is currently not supported! Please use \"Ninja Multi-Config\".")
+			sys.exit(1)
+elif platform == "linux" and (c_compiler == "clang-22" or c_compiler == "clang++-22"):
+	# Due to a compiler bug with C++20 Modules in clang, we need the
+	# very latest version of clang, which is not available in package managers yet.
+	# We'll use our own prebuilt version for now.
+	from third_party import clang
+	clang.main()
+	clang_staging_path = Path(get_library_root_dir("clang"))
+	if c_compiler == "clang-22":
+		c_compiler = str(clang_staging_path / "bin/clang")
+	if cxx_compiler == "clang++-22":
+		cxx_compiler = str(clang_staging_path / "bin/clang++")
+	print_msg("Setting c_compiler override to '" +c_compiler +"'")
+	print_msg("Setting cxx_compiler override to '" +cxx_compiler +"'")
+
+if platform == "linux" and with_debug:
+	config.toolsetCFlags = ["-D_GLIBCXX_ASSERTIONS"]
 
 if update:
 	os.chdir(root)
@@ -237,86 +334,7 @@ if update:
 	os.execv(sys.executable, ['python'] +argv)
 	sys.exit(0)
 
-
-mkpath(build_dir)
-mkpath(deps_dir)
-mkpath(install_dir)
-mkpath(tools)
-
 config.prebuilt_bin_dir = deps_dir +"/" +config.deps_staging_dir
-
-# Use prebuilt binaries if --build-all is not set
-if build_all == False:
-    def is_commit_current(base_path: str, commit_id: str, filename: str = "commit_id.txt") -> bool:
-        target_file = Path(base_path) / filename
-        if not target_file.exists():
-            return False
-        try:
-            return target_file.read_text(encoding="utf-8").strip() == commit_id
-        except Exception:
-            return False
-
-
-    def update_commit_directory(base_path: str, commit_id: str, filename: str = "commit_id.txt") -> None:
-        base = Path(base_path)
-        if base.exists():
-            print(f"Removing directory '{base}'...")
-            shutil.rmtree(base)
-
-        print(f"Creating directory '{base}'...")
-        base.mkdir(parents=True, exist_ok=True)
-
-        target_file = base / filename
-        print(f"Writing commit ID to '{target_file}'...")
-        target_file.write_text(commit_id, encoding="utf-8")
-
-    base_path = get_staging_dir()
-    if not is_commit_current(base_path, prebuilt_tag, "tag_id.txt"):
-        update_commit_directory(base_path, prebuilt_tag, "tag_id.txt")
-        os.chdir(base_path)
-
-        print_msg("Downloading prebuilt third-party binaries...")
-
-        if platform == "linux":
-            prebuilt_archive_name = "lib-linux_x64.tar.gz"
-            prebuilt_archive_format = "tar.gz"
-        else:
-            prebuilt_archive_name = "lib-windows_x64.zip"
-            prebuilt_archive_format = "zip"
-
-        http_extract("https://github.com/Silverlan/pragma-deps-lib/releases/download/" +prebuilt_tag +"/" +prebuilt_archive_name,format=prebuilt_archive_format)
-    else:
-        print(f"Directory '{base_path}' is already up-to-date.")
-
-########## clang-20 ##########
-# Due to a compiler bug with C++20 Modules in clang, we have to use clang-20 for now,
-# which is not available in package managers yet.
-if platform == "linux" and (c_compiler == "clang-20" or c_compiler == "clang++-20"):
-	clang_staging_path = get_library_root_dir("clang")
-	if build_all:
-		curDir = os.getcwd()
-		os.chdir(deps_dir)
-		clang20_root = os.getcwd() +"/LLVM-20.1.8-Linux-X64"
-		if not Path(clang20_root).is_dir():
-			print_msg("Downloading clang-20...")
-			http_extract("https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/LLVM-20.1.8-Linux-X64.tar.xz",format="tar.xz")
-		os.chdir(curDir)
-
-		copy_preserving_symlink(Path(clang20_root +"/bin/clang"), Path(clang_staging_path +"/bin"))
-		copy_preserving_symlink(Path(clang20_root +"/bin/clang++"), Path(clang_staging_path +"/bin"))
-		copy_preserving_symlink(Path(clang20_root +"/bin/clang-scan-deps"), Path(clang_staging_path +"/bin"))
-
-		copytree(clang20_root +"/include/c++", clang_staging_path +"/include/c++")
-		copytree(clang20_root +"/include/clang", clang_staging_path +"/include/clang")
-		copytree(clang20_root +"/include/clang-c", clang_staging_path +"/include/clang-c")
-		copytree(clang20_root +"/lib/clang", clang_staging_path +"/lib/clang")
-
-	if c_compiler == "clang-20":
-		c_compiler = clang_staging_path +"/bin/clang"
-	if cxx_compiler == "clang++-20":
-		cxx_compiler = clang_staging_path +"/bin/clang++"
-	print_msg("Setting c_compiler override to '" +c_compiler +"'")
-	print_msg("Setting cxx_compiler override to '" +cxx_compiler +"'")
 
 if platform == "linux":
 	os.environ["CC"] = c_compiler
@@ -324,8 +342,7 @@ if platform == "linux":
 
 def execscript(filepath):
 	global generator
-	global toolsetArgs
-	global toolsetCFlags
+	global config
 	global build_config
 	global build_directory
 	global deps_directory
@@ -346,8 +363,8 @@ def execscript(filepath):
 	g = {}
 	l = {
 		"generator": generator,
-		"toolsetArgs": toolsetArgs,
-		"toolsetCFlags": toolsetCFlags,
+		"toolsetArgs": config.toolsetArgs,
+		"toolsetCFlags": config.toolsetCFlags,
 		"build_config": build_config,
 		"build_directory": build_directory,
 		"deps_directory": deps_directory,
@@ -384,6 +401,8 @@ def execscript(filepath):
 		"install_prebuilt_binaries": install_prebuilt_binaries,
 		"reset_to_commit": reset_to_commit,
 		"check_repository_commit": check_repository_commit,
+		"check_content_version": check_content_version,
+		"update_content_version": update_content_version,
 		
 		"cmake_args": cmake_args,
 
@@ -407,62 +426,69 @@ if platform == "linux":
 	if(no_sudo):
 		print_msg("--no-sudo has been specified. System packages will be skipped, this may cause errors later on...")
 	else:
-		commands = [
-			# Required for the build script
-			"apt-get install python3",
-			
-			# Required for Pragma core
-			"apt install build-essential",
-			# "add-apt-repository ppa:savoury1/llvm-defaults-14",
-			"apt update",
-			"apt install clang-18",
-			"apt-get install clang-tools-18", # Required for C++20 Modules
-			"apt install libstdc++-12-dev",
-			"apt install libstdc++6",
-			"apt-get install patchelf",
+		if(prefer_pacman()):
+			commands = [
+				"pacman -S --needed cmake",
+				"pacman -S --needed ninja",
+				"pacman -Syu base-devel git curl zip unzip tar cmake ninja" # Required for vcpkg
+			]
+		else:
+			commands = [
+				# Required for the build script
+				"apt-get install python3",
+				
+				# Required for Pragma core
+				"apt install build-essential",
+				# "add-apt-repository ppa:savoury1/llvm-defaults-14",
+				"apt update",
+				"apt install clang-18",
+				"apt-get install clang-tools-18", # Required for C++20 Modules
+				"apt install libstdc++-12-dev",
+				"apt install libstdc++6",
+				"apt-get install patchelf",
 
-			# Required for Vulkan
-			"apt-get -qq install -y libwayland-dev libxrandr-dev",
+				# Required for Vulkan
+				"apt-get -qq install -y libwayland-dev libxrandr-dev",
 
-			"apt-get install libxcb-keysyms1-dev",
-			"apt-get install xcb libxcb-xkb-dev x11-xkb-utils libx11-xcb-dev libxkbcommon-x11-dev",
+				"apt-get install libxcb-keysyms1-dev",
+				"apt-get install xcb libxcb-xkb-dev x11-xkb-utils libx11-xcb-dev libxkbcommon-x11-dev",
 
-			# Required for GLFW
-			"apt install xorg-dev",
+				# Required for GLFW
+				"apt install xorg-dev",
 
-			# Required for OIDN
-			"apt install git-lfs",
+				# Required for OIDN
+				"apt install git-lfs",
 
-			# Required for Cycles
-			"apt-get install subversion",
-			"apt-get install meson", # epoxy
-			
-			# CMake
-			"apt-get install cmake",
+				# Required for Cycles
+				"apt-get install subversion",
+				"apt-get install meson", # epoxy
+				
+				# CMake
+				"apt-get install cmake",
 
-			# Required for Curl
-			"apt-get install libssl-dev",
-			
-			# Curl
-			"apt-get install curl zip unzip tar",
+				# Required for Curl
+				"apt-get install libssl-dev",
+				
+				# Curl
+				"apt-get install curl zip unzip tar",
 
-			# Required for OIIO
-			# "apt-get install python3-distutils",
+				# Required for OIIO
+				# "apt-get install python3-distutils",
 
-			#install freetype for linking. X server frontends (Gnome, KDE etc) already include it somewhere down the line. Also install pkg-config for easy export of flags.
-			"apt-get install pkg-config libfreetype-dev",
+				#install freetype for linking. X server frontends (Gnome, KDE etc) already include it somewhere down the line. Also install pkg-config for easy export of flags.
+				"apt-get install pkg-config libfreetype-dev",
 
-			# Ninja
-			"apt-get install ninja-build",
+				# Ninja
+				"apt-get install ninja-build",
 
-			# libdecor (required for Wayland)
-			"apt-get install wayland-protocols",
-			"apt-get install libdbus-1-dev",
-			"apt-get install libgtk-3-dev",
+				# libdecor (required for Wayland)
+				"apt-get install wayland-protocols",
+				"apt-get install libdbus-1-dev",
+				"apt-get install libgtk-3-dev",
 
-			# Required for libsdbus-c++
-			"apt-get install meson ninja-build libcap-dev libsystemd-dev pkg-config gperf"
-		]
+				# Required for libsdbus-c++
+				"apt-get install meson ninja-build libcap-dev libsystemd-dev pkg-config gperf"
+			]
 		install_system_packages(commands, no_confirm)
 
 module_list = []
@@ -483,7 +509,19 @@ execscript(scripts_dir +"/scripts/modules.py")
 ########## Third-Party Libraries ##########
 print_msg("Building third-party libraries...")
 if build_all:
-	execscript(scripts_dir +"/build_third_party_libs.py")
+	import build_third_party_libs
+	build_third_party_libs.main()
+
+# gcc
+os.chdir(deps_dir)
+gcc_root = normalize_path(os.getcwd() +"/gcc")
+if platform == "linux":
+	if not Path(gcc_root).is_dir():
+		print_msg("gcc not found. Downloading...")
+		mkdir("gcc",cd=True)
+		http_extract("https://github.com/Silverlan/test_gcc15/releases/download/2025-11-17/gcc-15.2.0.tar.xz",format="tar.xz")
+	os.chdir(gcc_root)
+	modules_json_path = gcc_root +"/lib64/libstdc++.modules.json"
 
 ########## Modules ##########
 print_msg("Downloading modules...")
@@ -527,7 +565,7 @@ def execbuildscript(filepath):
 	global cmake_args
 	global additional_build_targets
 	global generator
-	global toolsetArgs
+	global config
 	global moduleUrl
 	global moduleDir
 	global build_config
@@ -554,6 +592,7 @@ def execbuildscript(filepath):
 	global get_staging_dir
 	global get_library_root_dir
 	global get_library_lib_dir
+	global get_library_bin_dir
 
 	curDir = os.getcwd()
 
@@ -564,8 +603,8 @@ def execbuildscript(filepath):
 	}
 	l = {
 		"generator": generator,
-		"toolsetArgs": toolsetArgs,
-		"toolsetCFlags": toolsetCFlags,
+		"toolsetArgs": config.toolsetArgs,
+		"toolsetCFlags": config.toolsetCFlags,
 		"moduleUrl": moduleUrl,
 		"moduleDir": moduleDir,
 		"build_config": build_config,
@@ -586,6 +625,7 @@ def execbuildscript(filepath):
 		"get_staging_dir": get_staging_dir,
 		"get_library_root_dir": get_library_root_dir,
 		"get_library_lib_dir": get_library_lib_dir,
+		"get_library_bin_dir": get_library_bin_dir,
 
 		"install_directory": install_directory,
 		"verbose": verbose,
@@ -620,6 +660,8 @@ def execbuildscript(filepath):
 		"install_prebuilt_binaries": install_prebuilt_binaries,
 		"reset_to_commit": reset_to_commit,
 		"check_repository_commit": check_repository_commit,
+		"check_content_version": check_content_version,
+		"update_content_version": update_content_version,
 		"add_pragma_module": add_pragma_module
 	}
 	if platform == "linux":
@@ -673,29 +715,29 @@ execfile(scripts_dir +"/user_modules.py",g,l)
 if with_essential_client_modules:
 	add_pragma_module(
 		name="pr_prosper_vulkan",
-		commitSha="cea2de3151521e364efddfb506b78fe782b23464",
+		commitSha="f39e9cf202d69626101bb07d6294bf455799b7c3",
 		repositoryUrl="https://github.com/Silverlan/pr_prosper_vulkan.git"
 	)
 
 if with_common_modules:
 	add_pragma_module(
 		name="pr_bullet",
-		commitSha="8276afc2a19ebb51862acaecebf44fd6630c4d39",
+		commitSha="094fe87b217a9985fdc3cdce29f614b2d469f293",
 		repositoryUrl="https://github.com/Silverlan/pr_bullet.git"
 	)
 	add_pragma_module(
 		name="pr_audio_soloud",
-		commitSha="8428da359ce2cb5e2fb302ceb9709ad6bc138ffd",
+		commitSha="a7c91941de48d63e4ec06444f714240f46c0ced8",
 		repositoryUrl="https://github.com/Silverlan/pr_soloud.git"
 	)
 	add_pragma_module(
 		name="pr_audio_dummy",
-		commitSha="6fff8474681ffac9f365b068c20a93f4479162f1",
+		commitSha="c95ca9ecdd7a33397a5253343117f4e242c45928",
 		repositoryUrl="https://github.com/Silverlan/pr_audio_dummy.git"
 	)
 	add_pragma_module(
 		name="pr_prosper_opengl",
-		commitSha="d7d80184ed7b94657a92c793d3d5c79efdaf0197",
+		commitSha="ecfcaad223adeae285b7eea0ca3e70ea46af50db",
 		repositoryUrl="https://github.com/Silverlan/pr_prosper_opengl.git"
 	)
 
@@ -703,66 +745,66 @@ if with_pfm:
 	if with_core_pfm_modules or with_all_pfm_modules:
 		add_pragma_module(
 			name="pr_curl",
-			commitSha="c243468a77de16ae4657e257ea965d1cac05fe8e",
+			commitSha="41d4f9d39d18cfca5ff0af1a310c0bf4f01d5adc",
 			repositoryUrl="https://github.com/Silverlan/pr_curl.git"
 		)
 		add_pragma_module(
 			name="pr_dmx",
-			commitSha="34c268365b0d35ff2fa15f781c0f2ddfda65b993",
+			commitSha="d4ae5defaf03cf3d1b8337818be1ccedbdbaebcd",
 			repositoryUrl="https://github.com/Silverlan/pr_dmx.git"
 		)
 	if with_all_pfm_modules:
 		add_pragma_module(
 			name="pr_chromium",
-			commitSha="03bea6f6e6d46e3d1687a85350ca9993a5f70151",
+			commitSha="6321e623f025a33648eb27cd5c53f82b54b64836",
 			repositoryUrl="https://github.com/Silverlan/pr_chromium.git"
 		)
 		add_pragma_module(
 			name="pr_unirender",
-			commitSha="c19a75f0155efb04f56b719fd9c29187247db127",
+			commitSha="a9f5de71ab98edd4166eeebe2914c9071b9ab947",
 			repositoryUrl="https://github.com/Silverlan/pr_cycles.git"
 		)
 		add_pragma_module(
 			name="pr_xatlas",
-			commitSha="800ee6203138ab59dc90bf7b9b351b55abf8d052",
+			commitSha="5d7ff7f4728ed5bf1290757b161df4bb3ef58b69",
 			repositoryUrl="https://github.com/Silverlan/pr_xatlas.git"
 		)
 		add_pragma_module(
 			name="pr_davinci",
-			commitSha="9df824d14527767682caaec6237816900116b559",
+			commitSha="c09482375a0ff1098283513b6d7e06a67b30b9f9",
 			repositoryUrl="https://github.com/Silverlan/pr_davinci.git"
 		)
 		add_pragma_module(
 			name="pr_opencv",
-			commitSha="fdd1b1ec230b0cca6c822fe4dfa204415550a014",
+			commitSha="6899a8504225e232db73a4f9be514fcb889a14f9",
 			repositoryUrl="https://github.com/Silverlan/pr_opencv.git"
 		)
 
 if with_pfm:
 	add_pragma_module(
 		name="pr_git",
-		commitSha="1d9d81afe838d2c1e28da45058cf7060c06cdbab",
+		commitSha="9101fb9b3721bec179b0425f87441306fdee27b1",
 		repositoryUrl="https://github.com/Silverlan/pr_git.git"
 	)
 
 if with_vr:
 	add_pragma_module(
 		name="pr_openvr",
-		commitSha="b51c0b4692402469644901cb17dcaf15910df0a2",
+		commitSha="91c3d5175bb229c9afc0b02a91256d3673dfc221",
 		repositoryUrl="https://github.com/Silverlan/pr_openvr.git"
 	)
 
 if with_networking:
 	add_pragma_module(
 		name="pr_steam_networking_sockets",
-		commitSha="ffef84e5bba8467370c7d447017ebf8e864c2a0f",
+		commitSha="39a1be41903b131696dcc6f4a1aa6b7db9a1678a",
 		repositoryUrl="https://github.com/Silverlan/pr_steam_networking_sockets.git",
 		skipBuildTarget=True
 	)
 
 # These modules are shipped with the Pragma repository and will have to be excluded from the
 # CMake configuration explicitly if they should be disabled.
-shippedModules = ["pr_audio_dummy","pr_prosper_opengl","pr_prosper_vulkan","pr_curl"]
+shippedModules = []
 
 index = 0
 # The module list can be modified during iteration, so we have to use a while loop here.
@@ -826,10 +868,12 @@ if not deps_only:
 	print_msg("Configuring Pragma...")
 	os.chdir(build_dir)
 
-	print_msg("Running CMake configure...")
 	cmake_args += [
 		"-DCMAKE_INSTALL_PREFIX:PATH=" +install_dir +""
 	]
+
+	if platform == "linux":
+		cmake_args += ["-DCMAKE_CXX_STDLIB_MODULES_JSON=" +modules_json_path]
 
 	vtune_enabled = False
 	if len(vtune_include_path) > 0 or len(vtune_library_path) > 0:
@@ -847,11 +891,15 @@ if not deps_only:
 	cmake_args += [f"-DWITH_VR={1 if with_vr else 0}"]
 	cmake_args += [f"-DWITH_COMMON_ENTITIES={1 if with_common_entities else 0}"]
 	cmake_args += [f"-DWITH_COMMON_MODULES={1 if with_common_modules else 0}"]
+	if platform == "linux":
+		cmake_args += [f"-DPRAGMA_DEBUG={1 if with_debug else 0}"]
 
 	cmake_args += additional_cmake_args
 	cmake_args.append("-DCMAKE_POLICY_VERSION_MINIMUM=4.0")
+	cmake_args.append("-DCMAKE_CXX_SCAN_FOR_MODULES=1")
+	cmake_args.append("-DCMAKE_EXPORT_COMPILE_COMMANDS=1")
 	cmake_args.append("-DPRAGMA_DEPS_DIR=" +config.deps_dir +"/" +config.deps_staging_dir)
-	cmake_configure_def_toolset(root,generator,cmake_args)
+	cmake_configure_def_toolset(root,generator,cmake_args,additional_cmake_flags)
 
 	print_msg("Build files have been written to \"" +build_dir +"\".")
 
